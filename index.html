@@ -74,6 +74,12 @@
   .clock .t { font-family:'Lora',serif; font-weight:600; font-size:3.6vh; line-height:1; color:var(--text); letter-spacing:.15vh; }
   .clock .ln { width:4vh; height:1px; background:var(--accent); margin:1.2vh 0 1.1vh; }
   .clock .d { font-family:'Inter',sans-serif; font-weight:300; font-size:1.6vh; letter-spacing:.4vh; text-transform:uppercase; color:var(--sub); }
+  /* Разовое сообщение от администратора */
+  #s-msg { flex-direction:column; align-items:center; justify-content:center; text-align:center; }
+  #s-msg .line { width:9vh; height:1px; background:var(--accent); margin:0 0 6vh; }
+  #s-msg .msg { font-family:'Lora',serif; font-weight:600; font-size:8vh; line-height:1.25; max-width:72vw; }
+  body.off .stage, body.off .clock, body.off .dots, body.off .bgvid, body.off .veil, body.off .glow { display:none; }
+  body.off { background:#000; }
   .hint { position:fixed; left:2vw; top:1.6vh; font-size:1.7vh; color:var(--muted); opacity:.0; transition:opacity .4s; }
   body.show-hint .hint { opacity:.8; }
   .dots { position:fixed; right:2vw; bottom:2vh; display:flex; gap:1vh; }
@@ -86,6 +92,7 @@
   <source src="bg.mp4" type="video/mp4">
   <source src="bg.webm" type="video/webm">
 </video>
+<img class="bgvid" id="bgimg" alt="" style="display:none">
 <div class="veil"></div>
 <div class="glow"></div>
 <div class="stage">
@@ -124,6 +131,12 @@
     </div>
   </section>
 
+  <!-- 4. Сообщение на экран -->
+  <section class="scene" id="s-msg">
+    <div class="line"></div>
+    <div class="msg" id="msgText"></div>
+  </section>
+
 </div>
 <div class="clock" id="clock"><div class="t" id="clTime"></div><div class="ln"></div><div class="d" id="clDate"></div></div>
 <div class="dots" id="dots"></div>
@@ -133,10 +146,12 @@
 (function () {
   var API = 'https://notion-proxy-na-kryishe-production.up.railway.app/api/events';
   var SCENE_MS = 11000;
+  var SERVER = new URLSearchParams(location.search).get('api') || 'https://notion-proxy-na-kryishe-production.up.railway.app';
+  var ALL = ['s-idle', 's-welcome', 's-bday', 's-event', 's-msg'];
   var MONTHS = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
   var MON_SHORT = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
   var q = new URLSearchParams(location.search);
-  var scenes = ['s-idle', 's-welcome', 's-bday', 's-event'];
+  var scenes = (q.get('room') && q.get('key')) ? ['s-idle'] : ['s-idle', 's-welcome', 's-bday', 's-event'];
   var cur = -1, timer = null, paused = false, events = [];
 
   // Демо-данные: пока сервер не отвечает или афиша пустая
@@ -170,7 +185,7 @@
     cur = (i + scenes.length) % scenes.length;
     var id = scenes[cur];
     if (id === 's-event') { var list = events.length ? events : DEMO; fillEvent(list[evIdx % list.length]); evIdx++; }
-    for (var k = 0; k < scenes.length; k++) el(scenes[k]).classList.toggle('on', k === cur);
+    for (var k = 0; k < ALL.length; k++) el(ALL[k]).classList.toggle('on', ALL[k] === id);
     var dots = el('dots').children; for (var j = 0; j < dots.length; j++) dots[j].classList.toggle('on', j === cur);
     clearTimeout(timer);
     if (!paused) timer = setTimeout(function () { show(cur + 1); }, SCENE_MS);
@@ -212,7 +227,7 @@
     else if (k === 'f') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); }
     else if (k === 'h') document.body.classList.toggle('show-hint');
   });
-  if (q.get('hint') !== '0') document.body.classList.add('show-hint');
+  if (q.get('hint') !== '0' && !(q.get('room') && q.get('key'))) document.body.classList.add('show-hint');
   setTimeout(function () { document.body.classList.remove('show-hint'); }, 15000);
 
   // Фон: ?blur=18 (размытие, px), ?bright=0.55 (яркость), ?veil=0.38 (затемнение), ?bg=0 (без видео)
@@ -225,6 +240,75 @@
     if (q.get('bg') === '0') v.style.display = 'none';
     else { v.muted = true; var pr = v.play(); if (pr && pr.catch) pr.catch(function () {}); }
   })();
+
+  // ─── Живой режим: ?room=1&key=… — экран управляется из приложения персонала (Сервис → ТВ-экраны) ───
+  var ROOM = q.get('room'), KEY = q.get('key');
+  var LIVE = !!(ROOM && KEY);
+  var DEF = {};                       // стандартные тексты страницы: возвращаем их, если в приложении поле пустое
+  var TEXTS = { idleTag: '#s-idle .tag', welcome: '#s-welcome .hello', welcomeSub: '#s-welcome .sub', bdayBig: '#s-bday .big', bdayWish: '#bdWish', eventCta: '#s-event .book' };
+  Object.keys(TEXTS).forEach(function (k) { DEF[k] = document.querySelector(TEXTS[k]).textContent; });
+  var DEF_BG = el('bgvid').innerHTML, bgKey = '';
+  var last = { guest: '', msg: '', sig: '' };
+
+  function applyBg(bg) {
+    var key = bg ? (bg.url || '') + '|' + bg.type : '';
+    var r = document.documentElement.style;
+    r.setProperty('--blur', (bg ? bg.blur : 18) + 'px');
+    r.setProperty('--bright', bg ? bg.bright : .55);
+    r.setProperty('--veil', bg ? bg.veil : .38);
+    if (key === bgKey) return;
+    bgKey = key;
+    var v = el('bgvid'), im = el('bgimg');
+    if (bg && bg.url && bg.type === 'image') {
+      v.style.display = 'none'; try { v.pause(); } catch (e) {}
+      im.onerror = function () { im.style.display = 'none'; };
+      im.src = bg.url; im.style.display = '';
+    } else {
+      im.style.display = 'none';
+      v.style.display = '';
+      if (bg && bg.url) { v.innerHTML = ''; v.src = bg.url; }
+      else { v.removeAttribute('src'); v.innerHTML = DEF_BG; }
+      v.muted = true; v.load(); var pr = v.play(); if (pr && pr.catch) pr.catch(function () {});
+    }
+  }
+
+  function applyConfig(c) {
+    document.body.classList.toggle('off', c.enabled === false);
+    if (c.enabled === false) return;
+    SCENE_MS = Math.max(5, c.sceneSec || 11) * 1000;
+    applyBg(c.bg);
+    var t = c.texts || {};
+    Object.keys(TEXTS).forEach(function (k) { document.querySelector(TEXTS[k]).textContent = t[k] || DEF[k]; });
+    var g = c.guest, msg = c.message || '';
+    var list = [];
+    if (msg) list.push('s-msg');
+    if (!c.scenes || c.scenes.idle !== false) list.push('s-idle');
+    if (g) list.push('s-welcome');
+    if (g && g.birthday) list.push('s-bday');
+    if (!c.scenes || c.scenes.event !== false) list.push('s-event');
+    if (!list.length) list.push('s-idle');
+    var gKey = g ? (g.name || '·') + (g.birthday ? '+' : '') : '';
+    if (g) { el('wcName').textContent = g.name || ''; el('wcName').style.display = g.name ? '' : 'none'; el('bdName').textContent = g.name || ''; }
+    el('msgText').textContent = msg;
+    var sig = list.join(',') + '|' + gKey + '|' + msg;
+    if (sig === last.sig) return;
+    var curId = scenes[cur], target = null;
+    if (gKey && gKey !== last.guest) target = 's-welcome';          // гостя только что посадили — приветствие сразу
+    else if (msg && msg !== last.msg) target = 's-msg';             // новое сообщение — сразу на экран
+    last = { guest: gKey, msg: msg, sig: sig };
+    scenes = list;
+    var d = el('dots'); d.innerHTML = ''; list.forEach(function () { d.appendChild(document.createElement('i')); });
+    var idx = list.indexOf(target || curId);
+    show(idx < 0 ? 0 : idx);
+  }
+
+  function poll() {
+    fetch(SERVER + '/api/tv/' + encodeURIComponent(ROOM) + '?key=' + encodeURIComponent(KEY), { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(applyConfig)
+      .catch(function (e) { /* нет связи — остаётся последнее, что было на экране */ });
+  }
+  if (LIVE) { poll(); setInterval(poll, 15000); }
   var first = q.get('scene') ? scenes.indexOf('s-' + q.get('scene')) : 0;
   show(first < 0 ? 0 : first);
   if (q.get('scene')) paused = true;
